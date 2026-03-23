@@ -1,0 +1,84 @@
+{
+  "title": "AI 学习笔记",
+  "description": "系统学习人工智能技术，从基础到实践",
+  "author": "tn zha",
+  "language": "zh-hans",
+  "plugins": [
+    "-highlight",
+    "prism",
+    "prism-themes",
+    "github-buttons",
+    "edit-link",
+    "sharing-plus",
+    "search-pro",
+    "chapter-fold",
+    "code",
+    "splitter",
+    "page-toc-button",
+    "back-to-top-button",
+    "hide-element",
+    "tbfed-pagefooter",
+    "pageview-count"
+  ],
+  "pluginsConfig": {
+    "prism": {
+      "css": [
+        "prism-themes/themes/prism-atom-dark.css"
+      ],
+      "lang": {
+        "shell": "bash",
+        "python": "python",
+        "typescript": "typescript"
+      }
+    },
+    "github-buttons": {
+      "buttons": [
+        {
+          "user": "zhatongning",
+          "repo": "ai-learning",
+          "type": "star",
+          "size": "small",
+          "count": true
+        }
+      ]
+    },
+    "edit-link": {
+      "base": "https://github.com/zhatongning/ai-learning/edit/main",
+      "label": "编辑此页"
+    },
+    "sharing": {
+      "douban": false,
+      "facebook": false,
+      "google": false,
+      "pocket": false,
+      "qq": true,
+      "qzone": true,
+      "twitter": false,
+      "weibo": true,
+      "all": [
+        "qq",
+        "qzone",
+        "weibo"
+      ]
+    },
+    "hide-element": {
+      "elements": [
+        ".gitbook-link"
+      ]
+    },
+    "tbfed-pagefooter": {
+      "copyright": "Copyright © tn zha 2026",
+      "modify_label": "该文件修订时间：",
+      "modify_format": "YYYY-MM-DD HH:mm:ss"
+    },
+    "pageview-count": {
+      "position": "top"
+    }
+  },
+  "structure": {
+    "readme": "README.md",
+    "glossary": {
+      "glossary": "GLOSSARY.md"
+    }
+  }
+}
