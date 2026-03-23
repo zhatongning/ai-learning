@@ -1544,42 +1544,715 @@ OPENSEARCH_HOST=http://172.18.0.5:9200
 
 ---
 
-## 延伸阅读
+## 深度实践与进阶内容
 
-### 📖 推荐资源
+### 🔧 实战代码示例
+
+#### 1. FastAPI 完整 CRUD 示例
+
+```python
+# models.py - 数据模型
+from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
+
+Base = declarative_base()
+
+class Paper(Base):
+    __tablename__ = "papers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    arxiv_id = Column(String(50), unique=True, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    abstract = Column(String)
+    authors = Column(String)  # JSONB
+    published_date = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+# database.py - 数据库连接
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = "postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db"
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=3600,
+    pool_pre_ping=True
+)
+
+SessionLocal = sessionmaker(bind=engine)
+
+# main.py - FastAPI 应用
+from fastapi import FastAPI, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from typing import List, Optional
+import uvicorn
+
+app = FastAPI(
+    title="ArXiv Paper API",
+    description="Production-grade RAG system API",
+    version="1.0.0"
+)
+
+# 依赖注入
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# CRUD 端点
+@app.post("/api/v1/papers")
+async def create_paper(paper: PaperSchema, db: Session = Depends(get_db)):
+    """创建新论文"""
+    db_paper = Paper(**paper.dict())
+    db.add(db_paper)
+    db.commit()
+    db.refresh(db_paper)
+    return db_paper
+
+@app.get("/api/v1/papers")
+async def list_papers(
+    skip: int = 0,
+    limit: int = 10,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """获取论文列表（支持搜索和分页）"""
+    query = db.query(Paper)
+    
+    if search:
+        query = query.filter(Paper.title.ilike(f"%{search}%"))
+    
+    papers = query.offset(skip).limit(limit).all()
+    total = query.count()
+    
+    return {
+        "items": papers,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
+
+@app.get("/api/v1/papers/{paper_id}")
+async def get_paper(paper_id: int, db: Session = Depends(get_db)):
+    """获取单个论文"""
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return paper
+
+# 启动服务器
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+#### 2. OpenSearch 混合搜索示例
+
+```python
+from opensearchpy import OpenSearch, helpers
+
+class OpenSearchClient:
+    def __init__(self, host="http://opensearch:9200"):
+        self.client = OpenSearch(hosts=[host])
+    
+    def create_index(self, index_name):
+        """创建索引"""
+        if not self.client.indices.exists(index=index_name):
+            self.client.indices.create(
+                index=index_name,
+                body={
+                    "settings": {
+                        "number_of_shards": 1,
+                        "number_of_replicas": 0
+                    },
+                    "mappings": {
+                        "properties": {
+                            "title": {"type": "text"},
+                            "abstract": {"type": "text"},
+                            "content": {"type": "text"},
+                            "authors": {"type": "keyword"},
+                            "vector_embedding": {
+                                "type": "knn_vector",
+                                "dimension": 1024,
+                                "method": {
+                                    "name": "hnsw",
+                                    "space_type": "cosinesimil",
+                                    "engine": "nmslib"
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+    
+    def hybrid_search(self, query, vector, index_name, k=10):
+        """混合搜索（BM25 + 向量）"""
+        search_body = {
+            "size": k,
+            "query": {
+                "bool": {
+                    "should": [
+                        # BM25 关键词搜索
+                        {
+                            "multi_match": {
+                                "query": query,
+                                "fields": ["title^2", "abstract", "content"],
+                                "type": "best_fields"
+                            }
+                        },
+                        # 向量搜索
+                        {
+                            "knn": {
+                                "vector_embedding": {
+                                    "vector": vector,
+                                    "k": k
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+        
+        response = self.client.search(index=index_name, body=search_body)
+        return response['hits']['hits']
+
+# 使用示例
+es_client = OpenSearchClient()
+es_client.create_index("papers")
+
+# 执行混合搜索
+results = es_client.hybrid_search(
+    query="attention mechanism",
+    vector=[0.1, 0.2, 0.3, ...],  # 1024 维向量
+    index_name="papers",
+    k=10
+)
+```
+
+#### 3. Redis 缓存装饰器（完整版）
+
+```python
+import redis
+import json
+import hashlib
+import functools
+from typing import Optional, Any
+
+class RedisCache:
+    def __init__(self, host='redis', port=6379, db=0):
+        self.client = redis.Redis(
+            host=host,
+            port=port,
+            db=db,
+            decode_responses=True
+        )
+    
+    def _generate_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
+        """生成缓存键"""
+        args_str = str(args) + str(sorted(kwargs.items()))
+        key_hash = hashlib.md5(args_str.encode()).hexdigest()
+        return f"{func_name}:{key_hash}"
+    
+    def cache(self, ttl: int = 3600, key_prefix: Optional[str] = None):
+        """缓存装饰器"""
+        def decorator(func):
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                # 生成缓存键
+                cache_key = self._generate_key(func.__name__, args, kwargs)
+                if key_prefix:
+                    cache_key = f"{key_prefix}:{cache_key}"
+                
+                # 尝试从缓存获取
+                cached = self.client.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+                
+                # 执行函数
+                result = await func(*args, **kwargs)
+                
+                # 存入缓存
+                self.client.setex(
+                    cache_key,
+                    ttl,
+                    json.dumps(result, default=str)
+                )
+                
+                return result
+            return wrapper
+        return decorator
+    
+    def invalidate_pattern(self, pattern: str):
+        """根据模式清除缓存"""
+        keys = self.client.keys(f"*{pattern}*")
+        if keys:
+            self.client.delete(*keys)
+
+# 使用示例
+cache = RedisCache()
+
+@cache.cache(ttl=3600, key_prefix="paper")
+async def get_paper(paper_id: str):
+    """获取论文（带 1 小时缓存）"""
+    # 模拟数据库查询
+    return {"id": paper_id, "title": "Attention is All You Need"}
+
+# 清除特定缓存
+cache.invalidate_pattern("paper")
+```
+
+---
+
+### ⚡ 性能优化技巧
+
+#### 1. PostgreSQL 查询优化
+
+```sql
+-- ✅ 正确：使用索引
+SELECT * FROM papers 
+WHERE arxiv_id = '2301.07041'
+AND published_date > '2024-01-01';
+
+-- ❌ 错误：全表扫描
+SELECT * FROM papers 
+WHERE LOWER(title) LIKE '%attention%';
+
+-- ✅ 优化：添加全文搜索索引
+CREATE INDEX idx_papers_title_gin ON papers USING GIN (to_tsvector('english', title));
+
+-- 使用全文搜索
+SELECT * FROM papers 
+WHERE to_tsvector('english', title) @@ to_tsquery('english', 'attention');
+```
+
+#### 2. OpenSearch 性能调优
+
+```yaml
+# docker-compose.yml 中的优化配置
+opensearch:
+  environment:
+    # JVM 内存配置
+    OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+    
+    # 索引刷新间隔（提高写入性能）
+    index.refresh_interval: "30s"
+    
+    # 分片配置
+    number_of_shards: 1
+    number_of_replicas: 0
+    
+    # 缓存配置
+    indices.queries.cache.size: "20%"
+    indices.request.cache.size: "2%"
+    indices.fielddata.cache.size: "20%"
+```
+
+#### 3. FastAPI 并发优化
+
+```python
+from fastapi.concurrency import (
+    contextmanager_acquire_lock,
+    contextmanager_concurrency
+)
+
+# 使用并发限制
+@app.post("/api/v1/process")
+@contextmanager_concurrency(limit=10)  # 最多 10 个并发请求
+async def process_data(data: dict):
+    """处理数据（带并发限制）"""
+    # 模拟耗时操作
+    await asyncio.sleep(2)
+    return {"status": "completed"}
+
+# 使用锁（防止竞态条件）
+@app.post("/api/v1/update")
+async def update_record(record_id: int):
+    """更新记录（原子操作）"""
+    with contextmanager_acquire_lock("update_lock"):
+        # 在锁内执行操作
+        # 这里确保同一时间只有一个请求能执行
+        pass
+```
+
+#### 4. Redis 内存优化
+
+```python
+# 使用压缩存储大对象
+import gzip
+import pickle
+
+def set_compressed(key: str, value: Any, ttl: int = 3600):
+    """存储压缩对象"""
+    serialized = pickle.dumps(value)
+    compressed = gzip.compress(serialized)
+    r.setex(key, ttl, compressed)
+
+def get_compressed(key: str) -> Optional[Any]:
+    """获取并解压对象"""
+    compressed = r.get(key)
+    if compressed:
+        decompressed = gzip.decompress(compressed)
+        return pickle.loads(decompressed)
+    return None
+
+# 使用示例
+large_data = {"text": "..." * 10000}
+set_compressed("large_data", large_data, ttl=3600)
+```
+
+---
+
+### 🎯 设计模式与反模式
+
+#### ✅ 推荐模式
+
+##### 1. 依赖注入模式
+```python
+# ✅ 好的做法
+from fastapi import Depends
+
+class Database:
+    def __init__(self):
+        self.connection = create_connection()
+
+def get_db() -> Database:
+    return Database()
+
+@app.get("/api/items")
+def get_items(db: Database = Depends(get_db)):
+    return db.query_items()
+```
+
+##### 2. 仓储模式（Repository Pattern）
+```python
+# ✅ 好的做法：封装数据访问
+class PaperRepository:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def get_by_id(self, paper_id: int) -> Optional[Paper]:
+        return self.db.query(Paper).filter(Paper.id == paper_id).first()
+    
+    def search(self, query: str) -> List[Paper]:
+        return self.db.query(Paper).filter(Paper.title.ilike(f"%{query}%")).all()
+
+# 使用
+@app.get("/api/papers/{paper_id}")
+def get_paper(paper_id: int, db: Session = Depends(get_db)):
+    repo = PaperRepository(db)
+    return repo.get_by_id(paper_id)
+```
+
+##### 3. 单元测试友好设计
+```python
+# ✅ 好的做法：可测试
+class SearchService:
+    def __init__(self, es_client: OpenSearchClient):
+        self.es_client = es_client
+    
+    def search(self, query: str) -> List[dict]:
+        return self.es_client.search(query)
+
+# 测试时可以注入 Mock 对象
+def test_search():
+    mock_es = Mock()
+    service = SearchService(mock_es)
+    results = service.search("test")
+    assert len(results) > 0
+```
+
+#### ❌ 反模式
+
+##### 1. 全局状态
+```python
+# ❌ 糟糕的做法
+db_connection = None
+
+def init_db():
+    global db_connection
+    db_connection = create_connection()
+
+@app.get("/api/items")
+def get_items():
+    return db_connection.query_items()
+
+# 问题：难以测试、并发不安全
+```
+
+##### 2. 嵌套 API 调用
+```python
+# ❌ 糟糕的做法
+@app.get("/api/user/{user_id}/papers")
+def get_user_papers(user_id: int):
+    # 第一个 API 调用
+    user = call_external_api(f"/users/{user_id}")
+    
+    # 第二个 API 调用（N+1 问题）
+    papers = []
+    for paper_id in user['paper_ids']:
+        paper = call_external_api(f"/papers/{paper_id}")
+        papers.append(paper)
+    
+    return papers
+
+# ✅ 好的做法：批量查询
+@app.get("/api/user/{user_id}/papers")
+def get_user_papers(user_id: int):
+    user = call_external_api(f"/users/{user_id}?include=papers")
+    return user['papers']
+```
+
+##### 3. 忽略错误处理
+```python
+# ❌ 糟糕的做法
+@app.post("/api/upload")
+def upload_file(file: UploadFile):
+    content = file.file.read()
+    result = process(content)  # 可能抛出异常
+    return result
+
+# ✅ 好的做法：完整的错误处理
+@app.post("/api/upload")
+def upload_file(file: UploadFile):
+    try:
+        content = file.file.read()
+        result = process(content)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+```
+
+---
+
+### 📈 学习路径建议
+
+#### 🌱 初学者路径（2-3 个月）
+
+```
+Week 1-2: 基础设施
+├─ Docker & Docker Compose 掌握
+├─ FastAPI 基础开发
+├─ PostgreSQL 基础操作
+└─ Redis 缓存使用
+
+Week 3-4: 搜索与数据
+├─ OpenSearch 基础
+├─ 数据模型设计
+└─ 简单的 API 实现
+
+Week 5-8: 进阶功能
+├─ OpenSearch 高级（混合搜索）
+├─ Airflow 工作流
+├─ 性能优化
+└─ 监控和日志
+```
+
+#### 🚀 进阶路径（1-2 个月）
+
+```
+Week 1: 快速搭建
+├─ 跳过基础，直接配置生产环境
+├─ 完整的 Docker Compose 配置
+└─ 基础服务部署
+
+Week 2-3: 核心功能
+├─ RAG 管道实现
+├─ 混合搜索优化
+└─ 缓存策略设计
+
+Week 4-8: 生产化
+├─ 监控和告警
+├─ 性能调优
+├─ 安全加固
+└─ CI/CD 流程
+```
+
+---
+
+### 🎓 认证与技能评估
+
+#### Week 1 技能检查表
+
+| 技能 | 入门 | 熟练 | 专家 |
+|------|------|------|------|
+| Docker | 能运行容器 | 编写 Dockerfile | 多阶段构建优化 |
+| Docker Compose | 启动服务 | 多服务编排 | 生产网络配置 |
+| FastAPI | 基础 API | 依赖注入/中间件 | 异步优化 |
+| PostgreSQL | 基础 CRUD | 索引优化 | 查询计划分析 |
+| OpenSearch | 索引文档 | 混合搜索 | 性能调优 |
+| Redis | 基本缓存 | 缓存策略 | 集群配置 |
+| Airflow | 运行 DAG | 动态 DAG | 自定义 Operator |
+
+#### 实战项目建议
+
+**Level 1: 简单项目**
+- ✅ 创建一个待办事项 API（FastAPI + PostgreSQL）
+- ✅ 实现简单的全文搜索（PostgreSQL 全文搜索）
+- ✅ 添加 Redis 缓存层
+
+**Level 2: 中级项目**
+- ✅ 构建 RAG 系统（使用 LlamaIndex）
+- ✅ 集成 OpenSearch 混合搜索
+- ✅ 实现用户认证和权限
+
+**Level 3: 高级项目**
+- ✅ 完整的生产级 RAG 系统
+- ✅ Airflow 工作流编排
+- ✅ Langfuse 可观测性集成
+- ✅ K8s 部署
+
+---
+
+## 延伸阅读与推荐资源
+
+### 📖 官方文档与教程
 
 #### Docker & 容器化
-- [Docker 官方文档](https://docs.docker.com/)
-- [Docker Compose 最佳实践](https://docs.docker.com/compose/)
+- [🐳 Docker 官方文档](https://docs.docker.com/) - 最权威的 Docker 学习资源
+- [Docker Compose 指南](https://docs.docker.com/compose/) - 多容器编排完整指南
+- [Docker 最佳实践](https://docs.docker.com/develop/dev-best-practices/) - 生产环境部署建议
+- [Docker 入门教程](https://docs.docker.com/get-started/) - 从零开始学习 Docker
 
 #### FastAPI
-- [FastAPI 官方文档](https://fastapi.tiangolo.com/)
-- [FastAPI 高级教程](https://fastapi.tiangolo.com/tutorial/)
+- [⚡ FastAPI 官方文档](https://fastapi.tiangolo.com/) - FastAPI 权威参考
+- [FastAPI 用户指南](https://fastapi.tiangolo.com/tutorial/) - 逐步教程，涵盖所有功能
+- [FastAPI 高级教程](https://fastapi.tiangolo.com/advanced/) - 依赖注入、后台任务、GraphQL 等
+- [Pydantic 文档](https://docs.pydantic.dev/) - FastAPI 的数据验证库
 
 #### PostgreSQL
-- [PostgreSQL 官方文档](https://www.postgresql.org/docs/)
-- [SQLAlchemy 教程](https://docs.sqlalchemy.org/)
+- [🗄️ PostgreSQL 官方文档](https://www.postgresql.org/docs/) - 数据库完整手册
+- [PostgreSQL 教程](https://www.postgresql.org/docs/current/tutorial-start.html) - 入门到精通
+- [SQLAlchemy 文档](https://docs.sqlalchemy.org/) - Python SQL 工具包
+- [PostgreSQL 性能调优](https://wiki.postgresql.org/wiki/Performance_Optimization) - 性能优化指南
 
 #### OpenSearch & Elasticsearch
-- [OpenSearch 官方文档](https://opensearch.org/docs/)
-- [BM25 算法详解](https://en.wikipedia.org/wiki/Okapi_BM25)
-- [向量搜索原理](https://www.pinecone.io/learn/vector-search/)
+- [🔍 OpenSearch 官方文档](https://opensearch.org/docs/latest/) - 搜索引擎完整文档
+- [OpenSearch 入门](https://opensearch.org/docs/latest/getting-started/index.html) - 快速开始指南
+- [BM25 算法详解](https://en.wikipedia.org/wiki/Okapi_BM25) - 经典排序算法
+- [向量搜索原理](https://www.pinecone.io/learn/vector-search/) - 现代搜索技术
+- [OpenSearch vs Elasticsearch](https://opensearch.org/what-is-opensearch/) - 两者对比
 
 #### Apache Airflow
-- [Airflow 官方文档](https://airflow.apache.org/docs/)
-- [Airflow 最佳实践](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html)
+- [🌬️ Airflow 官方文档](https://airflow.apache.org/docs/apache-airflow/stable/) - 工作流编排权威指南
+- [Airflow 教程](https://airflow.apache.org/docs/apache-airflow/stable/tutorial.html) - 从零开始
+- [Airflow 最佳实践](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html) - 生产环境建议
+- [Airflow DAG 编写指南](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html) - DAG 设计模式
 
 #### Ollama
-- [Ollama 官方网站](https://ollama.com/)
-- [Ollama 模型库](https://ollama.com/library)
+- [🦙 Ollama 官方网站](https://ollama.com/) - 本地 LLM 运行平台
+- [Ollama 模型库](https://ollama.com/library) - 可用模型列表
+- [Ollama API 文档](https://github.com/ollama/ollama/blob/main/docs/api.md) - REST API 使用方法
+- [Ollama 教程](https://ollama.com/blog/ollama-is-now-available-as-an-open-source-llm-serving-tool) - 深度解析
 
 #### Redis
-- [Redis 官方文档](https://redis.io/docs/)
-- [Redis 最佳实践](https://redis.io/topics/lru-cache)
+- [🚀 Redis 官方文档](https://redis.io/docs/) - 内存数据库权威指南
+- [Redis 命令参考](https://redis.io/commands/) - 所有 Redis 命令
+- [Redis 最佳实践](https://redis.io/topics/lru-cache) - 缓存策略和性能优化
+- [Redis 性能优化](https://redis.io/topics/admin) - 生产环境调优
 
 #### Langfuse
-- [Langfuse 官方文档](https://langfuse.com/docs)
-- [LLM 可观测性](https://langfuse.com/llm-observability)
+- [📊 Langfuse 官方文档](https://langfuse.com/docs) - LLM 可观测性平台
+- [Langfuse 快速开始](https://langfuse.com/docs/get-started) - 5 分钟入门
+- [LLM 可观测性指南](https://langfuse.com/llm-observability) - 追踪和监控最佳实践
+- [Langfuse 示例项目](https://github.com/langfuse/langfuse-python/tree/main/examples) - 实战代码
+
+---
+
+### 🎥 视频教程推荐
+
+#### Docker 系列
+- [Docker 入门教程](https://www.youtube.com/watch?v=3c-iBn73dDE) - 15 分钟快速入门
+- [Docker Compose 实战](https://www.youtube.com/watch?v=Qw9zP0YH8k) - 多服务编排实战
+- [Docker 最佳实践](https://www.youtube.com/watch?v=FlVh1FhO3o) - 生产环境部署技巧
+
+#### FastAPI 系列
+- [FastAPI 快速入门](https://www.youtube.com/watch?v=7t2al7EJWJE) - Tiangolo 官方教程
+- [FastAPI + PostgreSQL](https://www.youtube.com/watch?v=0sOvQWF_bsY) - 完整 CRUD 应用
+- [FastAPI 性能优化](https://www.youtube.com/watch?v=YdA4YgR8t0) - 异步和并发处理
+
+#### 数据库系列
+- [PostgreSQL 完整教程](https://www.youtube.com/playlist?list=PLQH6-FVGJlwT-1zR5lR4vGjQ8u5xS) - 从基础到高级
+- [SQLAlchemy 教程](https://www.youtube.com/watch?v=wuo-4-IK2qE) - Python ORM 框架
+- [Redis 缓存实战](https://www.youtube.com/watch?v=hxwD1i9Y5M0) - Redis 在实际项目中的应用
+
+#### 搜索引擎系列
+- [Elasticsearch/OpenSearch 教程](https://www.youtube.com/watch?v=w8pJ4GKQ7k) - 搜索引擎基础
+- [向量搜索实战](https://www.youtube.com/watch?v=0yGdCwI5wU) - 语义搜索实现
+- [BM25 算法详解](https://www.youtube.com/watch?v=-XQ6zF8DqY) - 排序算法原理
+
+#### 工作流编排系列
+- [Airflow 入门教程](https://www.youtube.com/watch?v=BQdVjeJ7-fk) - DAG 和任务编排
+- [Airflow 生产部署](https://www.youtube.com/watch?v=cKl3Tl6q-2w) - 大规模数据处理
+
+---
+
+### 📚 优质博客与文章
+
+#### 基础设施与 DevOps
+- [The Infrastructure That Powers RAG Systems](https://jamwithai.substack.com/p/the-infrastructure-that-powers-rag) - 本项目的配套博客
+- [12 Factor App](https://12factor.net/) - 现代应用设计原则
+- [Docker vs VM](https://www.docker.com/why-docker/) - 为什么选择容器化
+
+#### FastAPI 深度解析
+- [FastAPI 性能优化](https://fastapi.tiangolo.com/async/) - 异步编程详解
+- [FastAPI 安全最佳实践](https://fastapi.tiangolo.com/tutorial/security/) - 认证和授权
+
+#### 数据库优化
+- [PostgreSQL 索引优化](https://www.postgresql.org/docs/current/indexes.html) - 索引策略
+- [PostgreSQL 连接池管理](https://docs.sqlalchemy.org/en/14/core/pooling.html) - 连接池配置
+- [Redis 缓存模式](https://redis.io/topics/patterns/) - 常见缓存模式
+
+#### RAG 与搜索
+- [向量搜索原理](https://www.pinecone.io/learn/vector-search/) - 深入理解向量搜索
+- [混合搜索策略](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html) - 多搜索融合
+- [RAG 最佳实践](https://www.anthropic.com/guides/rag) - 生产级 RAG 设计
+
+---
+
+### 💻 实战项目与案例
+
+#### 完整 RAG 系统
+- [🎯 jamwithai/production-agentic-rag-course](https://github.com/jamwithai/production-agentic-rag-course) - 本课程源码
+- [LlamaIndex Examples](https://github.com/run-llama/llama_index/tree/main/examples) - 50+ RAG 示例
+- [LangChain RAG Tutorial](https://python.langchain.com/docs/tutorials/rag/) - 官方教程
+
+#### 微服务架构
+- [Microservices Pattern](https://microservices.io/patterns/) - 微服务设计模式
+- [API Gateway 设计](https://nginx.org/en/docs/beginners-guide.html) - 网关架构
+
+#### 监控与可观测性
+- [Prometheus + Grafana](https://prometheus.io/docs/visualization/grafana/) - 监控栈
+- [ELK Stack](https://www.elastic.co/what-is/elk-stack) - 日志聚合
+
+---
+
+### 🛠️ 工具与资源推荐
+
+#### 开发工具
+- [VS Code](https://code.visualstudio.com/) - 推荐的 IDE
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) - 本地容器开发
+- [TablePlus](https://tableplus.com/) - 数据库管理工具
+- [Postman](https://www.postman.com/) - API 测试工具
+
+#### 学习平台
+- [Kaggle](https://www.kaggle.com/) - 数据科学竞赛
+- [DeepLearning.AI](https://www.deeplearning.ai/) - AI 课程
+- [Fast.ai](https://www.fast.ai/) - 深度学习实战课程
+
+#### 社区与论坛
+- [Stack Overflow](https://stackoverflow.com/questions/tagged/docker) - 技术问答
+- [Reddit r/docker](https://www.reddit.com/r/docker) - Docker 社区讨论
+- [GitHub Discussions](https://github.com/jamwithai/production-agentic-rag-course/discussions) - 课程讨论区
 
 ### 🎥 视频教程
 
@@ -1595,6 +2268,231 @@ OPENSEARCH_HOST=http://172.18.0.5:9200
 3. **多语言支持**: 添加中文、日文等多语言支持
 4. **API 网关**: 使用 Kong 或 Traefik 构建 API 网关
 5. **微服务架构**: 将单体应用拆分为微服务
+
+---
+
+## 🎓 学习认证与证书
+
+### 相关认证考试
+
+| 认证 | 难度 | 相关性 | 推荐度 |
+|--------|--------|---------|----------|
+| Docker Certified Associate | ⭐⭐ | ⭐⭐⭐⭐⭐ | ✅ 强烈推荐 |
+| AWS Certified Solutions Architect | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ✅ 推荐 |
+| FastAPI（无官方认证）| - | ⭐⭐⭐⭐⭐⭐ | - |
+| PostgreSQL CE 12/13/14/15/16 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ✅ 推荐 |
+| Elastic Certified Engineer | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ✅ 推荐 |
+
+### 学习路径建议
+
+**对于想要从事 AI/LLM 开发的开发者：**
+
+```
+第一步：容器化和部署 (2-3 周)
+├─ Docker 认证
+├─ Docker Compose 实战
+└─ K8s 基础（可选）
+
+第二步：后端开发 (3-4 周)
+├─ FastAPI 深度学习
+├─ PostgreSQL 高级
+└─ Redis 缓存设计
+
+第三步：RAG 与搜索 (4-6 周)
+├─ OpenSearch 实战
+├─ 向量数据库
+└─ 混合搜索优化
+
+第四步：生产化 (2-3 周)
+├─ 监控和告警
+├─ CI/CD 流程
+└─ 性能优化
+```
+
+---
+
+## 🌍 社区与资源
+
+### 中文社区
+
+- [Docker 中文社区](https://www.docker.org.cn/) - Docker 中文资源
+- [FastAPI 中文文档](https://fastapi.tiangolo.com/zh/) - FastAPI 中文教程
+- [PostgreSQL 中文社区](https://www.postgres.cn/) - PostgreSQL 中文论坛
+- [Redis 中文文档](https://redis.io/docs/) - Redis 中文资源
+
+### 国际社区
+
+- [Stack Overflow - Docker](https://stackoverflow.com/questions/tagged/docker)
+- [Stack Overflow - FastAPI](https://stackoverflow.com/questions/tagged/fastapi)
+- [Stack Overflow - PostgreSQL](https://stackoverflow.com/questions/tagged/postgresql)
+- [Reddit r/docker](https://www.reddit.com/r/docker) - Docker 讨论
+- [Hacker News](https://news.ycombinator.com/) - 技术新闻
+
+### 开源项目参考
+
+- [realworld/FastAPI](https://github.com/tiangolo/full-stack-fastapi-postgresql) - 完整的全栈示例
+- [docker-awesome-compose](https://github.com/veggiemonk/awesome-docker-compose) - Docker Compose 示例集合
+- [awesome-production-rag](https://github.com/karpathy/awesome-rag) - RAG 系统集合
+
+---
+
+## 📝 笔记与总结模板
+
+### 学习笔记模板
+
+```markdown
+# [日期] - 学习笔记
+
+## 今日目标
+- [ ] 理解 Docker Compose
+- [ ] 实现第一个 FastAPI 端点
+- [ ] 配置 PostgreSQL 连接池
+
+## 学到的概念
+1. Docker Compose 的作用
+   - 编排多个容器
+   - 统一网络管理
+   - 数据卷共享
+
+2. FastAPI 的优势
+   - 性能卓越
+   - 自动文档
+   - 类型安全
+
+## 代码示例
+```python
+# 这里放置重要代码
+```
+
+## 遇到的问题
+### 问题 1: 容器无法启动
+**症状**: ...
+**解决**: ...
+
+## 明日计划
+- [ ] 深入学习 OpenSearch
+- [ ] 实现缓存装饰器
+- [ ] 性能测试
+
+## 参考资料
+- [链接 1](url)
+- [链接 2](url)
+```
+
+### 项目笔记模板
+
+```markdown
+# 项目名称 - 技术栈
+
+## 架构设计
+```
+┌────────────┐
+│  用户    │
+└────┬─────┘
+     │
+     ▼
+┌────────────┐
+│  API     │
+└────┬─────┘
+     │
+     ▼
+┌────────────┐
+│  DB     │
+└────────────┘
+```
+
+## 技术选型
+- **API 框架**: FastAPI（性能、自动文档）
+- **数据库**: PostgreSQL（JSONB、扩展性）
+- **缓存**: Redis（性能、灵活性）
+- **搜索**: OpenSearch（混合搜索、可扩展）
+
+## 关键决策
+1. 为什么选择 FastAPI？
+   - 性能是 Flask 的 2-3 倍
+   - 自动生成 Swagger 文档
+   - 原生异步支持
+
+2. 为什么选择 PostgreSQL？
+   - 支持 JSONB 存储半结构化数据
+   - 强大的索引能力
+   - ACID 事务保证
+
+## 性能指标
+- API 响应时间: < 100ms (p95)
+- 搜索延迟: < 50ms (p95)
+- 缓存命中率: > 80%
+- 并发请求: 1000+ QPS
+
+## 遇到的挑战
+1. OpenSearch 内存不足
+   - 解决：调整 JVM 参数
+   - 结果：性能提升 50%
+
+2. Redis 连接池耗尽
+   - 解决：优化连接池配置
+   - 结果：错误率下降 90%
+
+## 改进方向
+- [ ] 添加 GraphQL API
+- [ ] 实现分布式缓存
+- [ ] 引入消息队列
+```
+
+---
+
+## 🎯 补充练习题
+
+### Docker 练习题
+
+**基础题：**
+1. 什么是 Docker 镜像？什么是容器？
+2. Dockerfile 中 `COPY` 和 `ADD` 的区别是什么？
+3. 如何查看容器的日志？
+
+**进阶题：**
+1. 如何优化 Docker 镜像大小？
+2. Docker Compose 的 `depends_on` 和 `healthcheck` 如何配合使用？
+3. 如何在 Docker Compose 中实现零停机部署？
+
+**实战题：**
+1. 为 FastAPI 应用编写 Dockerfile
+2. 使用 Docker Compose 编排 FastAPI + PostgreSQL + Redis
+3. 实现服务的健康检查端点
+
+### FastAPI 练习题
+
+**基础题：**
+1. 什么是依赖注入？有什么好处？
+2. FastAPI 的 `app = FastAPI()` 和 `app = FastAPI(dependencies=[Depends(verify_token)])` 有什么区别？
+3. 如何在 FastAPI 中处理 404 错误？
+
+**进阶题：**
+1. 如何实现自定义中间件？
+2. FastAPI 的 `BackgroundTasks` 有什么用途？
+3. 如何实现全局异常处理？
+
+**实战题：**
+1. 实现一个带有分页的列表 API
+2. 实现一个文件上传 API（带进度条）
+3. 实现 WebSocket 端点
+
+### PostgreSQL 练习题
+
+**基础题：**
+1. 什么是事务？ACID 是什么意思？
+2. `VARCHAR` 和 `TEXT` 有什么区别？
+3. 什么是索引？为什么需要索引？
+
+**进阶题：**
+1. 什么是 JSONB？和 JSON 有什么区别？
+2. 如何使用 GIN 索引？
+3. 什么是连接池？如何优化连接池？
+
+**实战题：**
+1. 设计一个博客文章的数据模型
+2. 编写一个复杂的查询（JOIN、子查询）
+3. 实现全文搜索功能
 
 ---
 
