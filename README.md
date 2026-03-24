@@ -31,15 +31,15 @@
 - **[机器学习入门](basics/machine-learning.md)** - ML 基础理论和算法
 - **[深度学习基础](basics/deep-learning.md)** - 神经网络和深度学习
 
-### 🏗️ RAG 系统（生产级）
-- **[RAG 概述](rag/overview.md)** - 检索增强生成介绍
-- **[Week 1: 基础设施](rag/week1-infrastructure.md)** ⭐ - Docker、FastAPI、PostgreSQL 等
-- **[Week 2: 数据管道](rag/week2-data-pipeline.md)** - 数据摄取和处理
-- **[Week 3: 搜索基础](rag/week3-search-basics.md)** - BM25 关键词搜索
-- **[Week 4: 混合搜索](rag/week4-hybrid-search.md)** - 向量搜索 + 关键词搜索
-- **[Week 5: 完整 RAG](rag/week5-complete-rag.md)** - 完整的 RAG 系统
-- **[Week 6: 生产监控](rag/week6-monitoring.md)** - Langfuse 追踪和 Redis 缓存
-- **[Week 7: Agentic RAG](rag/week7-agentic-rag.md)** ⭐ - LangGraph 和智能代理
+### 🏗️ Agentic RAG 系统（生产级）
+- **[RAG 概述](agentic-rag/overview.md)** - 检索增强生成介绍
+- **[Week 1: 基础设施](agentic-rag/week1-infrastructure.md)** ⭐ - Docker、FastAPI、PostgreSQL 等
+- **[Week 2: 数据管道](agentic-rag/week2-data-pipeline.md)** - 数据摄取和处理
+- **[Week 3: 搜索基础](agentic-rag/week3-search-basics.md)** - BM25 关键词搜索
+- **[Week 4: 混合搜索](agentic-rag/week4-hybrid-search.md)** - 向量搜索 + 关键词搜索
+- **[Week 5: 完整 RAG](agentic-rag/week5-complete-rag.md)** - 完整的 RAG 系统
+- **[Week 6: 生产监控](agentic-rag/week6-monitoring.md)** - Langfuse 追踪和 Redis 缓存
+- **[Week 7: Agentic RAG](agentic-rag/week7-agentic-rag.md)** ⭐ - LangGraph 和智能代理
 
 ### 🤖 LLM 应用
 - **[LLM 基础](llm/basics.md)** - 大语言模型原理
